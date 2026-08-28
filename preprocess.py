@@ -1,10 +1,22 @@
+import typing
+import random
+
 import cv2
 import argparse
 import pathlib
 import os
-
+import re
 import h5py
 import numpy as np
+
+
+def parse_shape(string: str) -> tuple[int, int]:
+    pattern = re.compile(r"^([0-9]+)x([0-9]+)$")
+    matches = pattern.match(string)
+    height = int(matches[1])
+    width = int(matches[2])
+    return height, width
+    # pass
 
 
 def scale_and_crop(img: np.ndarray, dest_height: int, dest_width: int) -> np.ndarray:
@@ -40,56 +52,79 @@ def scale_and_crop(img: np.ndarray, dest_height: int, dest_width: int) -> np.nda
     return resized[y:y + dest_height, x:x + dest_width]
 
 
-parser = argparse.ArgumentParser()
-parser.add_argument('--image-dir', type=str)
-parser.add_argument('--out-dir', type=str)
-parser.add_argument("--img-height", type=int, default=128)
-parser.add_argument("--img-width", type=int, default=64)
+def main():
+    supported_image_suffixes = {'.jpg', '.jpeg', '.png'}
 
-args = parser.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--image-dir', type=str)
+    parser.add_argument('--out-file', type=str)
+    parser.add_argument("--shape", type=str, default="128x128")
 
-image_dir = pathlib.Path(args.image_dir)
-out_dir = pathlib.Path(args.out_dir)
+    args = parser.parse_args()
 
-supported_image_suffixes = {'.jpg', '.jpeg', '.png'}
-all_files = []
+    image_dir = pathlib.Path(args.image_dir)
+    out_file = pathlib.Path(args.out_file)
 
-for entry in image_dir.glob("*"):
-    if entry.is_dir():
-        continue
-    if not supported_image_suffixes.__contains__(entry.suffix):
-        print(f"Ignoring {entry}")
-        continue
-    all_files.append(entry)
+    all_files = []
+    for entry in image_dir.glob("*"):
+        if entry.is_dir():
+            continue
+        if not supported_image_suffixes.__contains__(entry.suffix):
+            print(f"Ignoring {entry}")
+            continue
+        all_files.append(entry)
+    random.shuffle(all_files)
 
-os.makedirs(out_dir, exist_ok=True)
+    f = h5py.File(out_file, mode='w')
 
-dest_height = args.img_height
-dest_width = args.img_width
+    ds_filenames = f.create_dataset("filename",
+                                    shape=(len(all_files),),
+                                    maxshape=(max(1024, len(all_files)),),
+                                    chunks=(1024,),
+                                    compression='gzip',
+                                    compression_opts=8,
+                                    dtype=h5py.string_dtype(),
+                                    )
 
-f = h5py.File(out_dir / "file.h5", mode='w')
-ds = f.create_dataset(f"{dest_height}x{dest_width}", shape=(len(all_files), dest_height, dest_width, 3),
-                      chunks=(16, dest_height, dest_width, 3),
-                      maxshape=(max(16, len(all_files)), dest_height, dest_width, 3), dtype='uint8',
-                      compression='szip')
+    ds_shapes: dict[tuple[int, int], typing.Any] = {}
+    for shape_str in args.shape.split(':'):
+        shape = parse_shape(shape_str)
+        dest_height, dest_width = shape
+        ds = f.create_dataset(shape_str,
+                              shape=(len(all_files), dest_height, dest_width, 3),
+                              chunks=(32, dest_height, dest_width, 3),
+                              maxshape=(max(32, len(all_files)), dest_height, dest_width, 3),
+                              dtype='uint8',
+                              compression='gzip',
+                              compression_opts=3,
+                              )
+        ds_shapes[shape] = ds
 
-dst_idx: int = 0
-for idx, entry in enumerate(all_files):
-    if idx % 100 == 0:
-        print(f"[{idx}/{len(all_files)}] Processing images")
+    dst_idx: int = 0
+    for idx, entry in enumerate(all_files):
+        if idx % 100 == 0:
+            print(f"[{idx}/{len(all_files)}] Processing images")
 
-    img: np.ndarray | None = cv2.imread(str(entry), cv2.IMREAD_COLOR_RGB)
-    if img is None:
-        print(f"Failed to load {entry}")
-        continue
+        img: np.ndarray | None = cv2.imread(str(entry), cv2.IMREAD_COLOR_RGB)
+        if img is None:
+            print(f"Failed to load {entry}")
+            continue
+        ds_filenames[dst_idx] = str(entry)
+        for (shape, ds) in ds_shapes.items():
+            new_img = scale_and_crop(img, shape[0], shape[1])
+            ds[dst_idx, :, :, :] = new_img
 
-    new_img = scale_and_crop(img, dest_height, dest_width)
+        dst_idx += 1
 
-    ds[dst_idx, :, :, :] = new_img
-    dst_idx += 1
+        # seems have to write as BGR
+        # new_img = cv2.cvtColor(new_img, cv2.COLOR_RGB2BGR)
+        # cv2.imwrite(out_dir / f"{entry.stem}.png", new_img)
 
-    # seems have to write as BGR
-    # new_img = cv2.cvtColor(new_img, cv2.COLOR_RGB2BGR)
-    # cv2.imwrite(out_dir / f"{entry.stem}.png", new_img)
-ds.resize((dst_idx, dest_height, dest_width, 3))
+    ds_filenames.resize((dst_idx,))
+    for (shape, ds) in ds_shapes.items():
+        ds.resize((dst_idx, shape[0], shape[1], 3))
 
+    f.close()
+
+
+main()
