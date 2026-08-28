@@ -1,13 +1,14 @@
-import typing
-import random
-
-import cv2
-import argparse
-import pathlib
 import os
 import re
+import random
+import argparse
+import pathlib
+import typing
+from concurrent.futures import ProcessPoolExecutor
+
 import h5py
 import numpy as np
+import cv2
 
 
 def parse_shape(string: str) -> tuple[int, int]:
@@ -20,22 +21,11 @@ def parse_shape(string: str) -> tuple[int, int]:
 
 
 def scale_and_crop(img: np.ndarray, dest_height: int, dest_width: int) -> np.ndarray:
-    assert img.ndim == 3
-    height, width, channels = img.shape
-    assert channels == 3
-    assert dest_height > 0 and dest_width > 0
-    assert height > 0 and width > 0
-
     src_h, src_w = img.shape[:2]
-
-    # 计算缩放因子：取宽和高的较大比例，保证覆盖目标尺寸
     scale = max(float(dest_width) / src_w, float(dest_height) / src_h)
-
-    # 缩放后的新尺寸（向上取整，确保不小于目标尺寸）
     new_w = int(np.ceil(src_w * scale))
     new_h = int(np.ceil(src_h * scale))
 
-    # 选择插值方法：缩小用 INTER_AREA，放大用 INTER_CUBIC，等尺寸用 INTER_LINEAR
     if scale < 1.0:
         interpolation = cv2.INTER_AREA
     elif scale > 1.0:
@@ -44,22 +34,40 @@ def scale_and_crop(img: np.ndarray, dest_height: int, dest_width: int) -> np.nda
         interpolation = cv2.INTER_LINEAR
 
     resized = cv2.resize(img, (new_w, new_h), interpolation=interpolation)
-
-    # 居中裁剪
     x = (new_w - dest_width) // 2
     y = (new_h - dest_height) // 2
-
     return resized[y:y + dest_height, x:x + dest_width]
+
+
+def process_one(job):
+    """子进程任务：读取一张图并处理成所有目标尺寸。
+    job = (图片路径, [(h,w), ...])
+    返回 (路径, {shape: 数组})，读取失败返回 (路径, None)。"""
+    path_str, shapes = job
+    img = cv2.imread(path_str, cv2.IMREAD_COLOR_RGB)
+    if img is None:
+        return path_str, None
+    return path_str, {shape: scale_and_crop(img, shape[0], shape[1]) for shape in shapes}
+
+
+def flush_batch(filenames_ds, img_datasets, buf, start):
+    """把 buf 里的一批结果写入 h5。batch 大小对齐 chunk，压缩更高效。"""
+    n = len(buf)
+    filenames_ds[start:start + n] = [p for p, _ in buf]
+    for shape, ds in img_datasets.items():
+        batch = np.stack([imgs[shape] for _, imgs in buf])
+        ds[start:start + n] = batch
+    return start + n
 
 
 def main():
     supported_image_suffixes = {'.jpg', '.jpeg', '.png'}
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--image-dirs', type=str)
-    parser.add_argument('--out-file', type=str)
+    parser.add_argument('--image-dirs', type=str, required=True)
+    parser.add_argument('--out-file', type=str, required=True)
     parser.add_argument("--shapes", type=str, default="128x128")
-
+    parser.add_argument("--workers", type=int, default=4)
     args = parser.parse_args()
 
     all_files = []
@@ -67,7 +75,7 @@ def main():
         for entry in pathlib.Path(image_dir).glob("*"):
             if entry.is_dir():
                 continue
-            if not supported_image_suffixes.__contains__(entry.suffix):
+            if entry.suffix.lower() not in supported_image_suffixes:
                 print(f"Ignoring {entry}")
                 continue
             all_files.append(entry)
@@ -89,39 +97,39 @@ def main():
         dest_height, dest_width = shape
         ds = f.create_dataset(shape_str,
                               shape=(len(all_files), dest_height, dest_width, 3),
-                              chunks=(32, dest_height, dest_width, 3),
-                              maxshape=(max(32, len(all_files)), dest_height, dest_width, 3),
+                              chunks=(128, dest_height, dest_width, 3),
+                              maxshape=(max(128, len(all_files)), dest_height, dest_width, 3),
                               dtype='uint8',
                               compression='gzip',
                               compression_opts=3,
                               )
         ds_shapes[shape] = ds
 
-    dst_idx: int = 0
-    for idx, entry in enumerate(all_files):
-        if idx % 100 == 0:
-            print(f"[{idx}/{len(all_files)}] Processing images")
+    jobs = [(str(p), list(ds_shapes.keys())) for p in all_files]
+    batch_size = 128  # 与 chunk 第一维一致
+    buf = []
+    dst_idx = 0
 
-        img: np.ndarray | None = cv2.imread(str(entry), cv2.IMREAD_COLOR_RGB)
-        if img is None:
-            print(f"Failed to load {entry}")
-            continue
-        ds_filenames[dst_idx] = str(entry)
-        for (shape, ds) in ds_shapes.items():
-            new_img = scale_and_crop(img, shape[0], shape[1])
-            ds[dst_idx, :, :, :] = new_img
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        # pool.map 保持任务顺序，输出顺序 = 打乱后的顺序（确定性的）
+        for path_str, imgs in pool.map(process_one, jobs, chunksize=16):
+            if imgs is None:
+                print(f"Failed to load {path_str}")
+                continue
+            buf.append((path_str, imgs))
+            if len(buf) >= batch_size:
+                dst_idx = flush_batch(ds_filenames, ds_shapes, buf, dst_idx)
+                buf.clear()
+                print(f"[{dst_idx}/{len(all_files)}] written")
 
-        dst_idx += 1
-
-        # seems have to write as BGR
-        # new_img = cv2.cvtColor(new_img, cv2.COLOR_RGB2BGR)
-        # cv2.imwrite(out_dir / f"{entry.stem}.png", new_img)
+    if buf:
+        dst_idx = flush_batch(ds_filenames, ds_shapes, buf, dst_idx)
 
     ds_filenames.resize((dst_idx,))
-    for (shape, ds) in ds_shapes.items():
+    for shape, ds in ds_shapes.items():
         ds.resize((dst_idx, shape[0], shape[1], 3))
-
     f.close()
 
 
-main()
+if __name__ == '__main__':
+    main()
