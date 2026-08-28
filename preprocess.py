@@ -56,27 +56,24 @@ def main():
     supported_image_suffixes = {'.jpg', '.jpeg', '.png'}
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--image-dir', type=str)
+    parser.add_argument('--image-dirs', type=str)
     parser.add_argument('--out-file', type=str)
-    parser.add_argument("--shape", type=str, default="128x128")
+    parser.add_argument("--shapes", type=str, default="128x128")
 
     args = parser.parse_args()
 
-    image_dir = pathlib.Path(args.image_dir)
-    out_file = pathlib.Path(args.out_file)
-
     all_files = []
-    for entry in image_dir.glob("*"):
-        if entry.is_dir():
-            continue
-        if not supported_image_suffixes.__contains__(entry.suffix):
-            print(f"Ignoring {entry}")
-            continue
-        all_files.append(entry)
+    for image_dir in args.image_dirs.split(';'):
+        for entry in pathlib.Path(image_dir).glob("*"):
+            if entry.is_dir():
+                continue
+            if not supported_image_suffixes.__contains__(entry.suffix):
+                print(f"Ignoring {entry}")
+                continue
+            all_files.append(entry)
     random.shuffle(all_files)
 
-    f = h5py.File(out_file, mode='w')
-
+    f = h5py.File(pathlib.Path(args.out_file), mode='w')
     ds_filenames = f.create_dataset("filename",
                                     shape=(len(all_files),),
                                     maxshape=(max(1024, len(all_files)),),
@@ -87,7 +84,7 @@ def main():
                                     )
 
     ds_shapes: dict[tuple[int, int], typing.Any] = {}
-    for shape_str in args.shape.split(':'):
+    for shape_str in args.shapes.split(';'):
         shape = parse_shape(shape_str)
         dest_height, dest_width = shape
         ds = f.create_dataset(shape_str,
