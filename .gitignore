@@ -1,2 +1,5 @@
-binary
+# IDE config files
 .idea
+# Genertated binaries
+binary
+__pycache__
