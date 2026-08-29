@@ -40,7 +40,7 @@ def main():
     optimizer = torch.optim.AdamW(sc_filter.parameters(), lr=1e-3, fused=True)
 
     train_loader = torch.utils.data.DataLoader(train_ds,
-                                               batch_size=32,
+                                               batch_size=16,
                                                shuffle=True,
                                                pin_memory=True,
                                                # num_workers=1,
@@ -58,9 +58,9 @@ def main():
     train_history: list[float] = []
     validate_history: list[float] = [math.nan]
 
-    N_epochs = 8
+    N_epochs = 16
     for epoch in range(N_epochs):
-        tau = 1.5 * math.pow(0.7, epoch) + 1e-2
+        tau = 1.5 * math.pow(0.5, epoch) + 1e-2
         print(f"tau = {tau}")
         sc_filter.train()
         for batch_idx, src_img in enumerate(train_loader):
@@ -112,7 +112,7 @@ def main():
     plt.ylabel("Loss")
     plt.legend()
 
-    plt.savefig(fig_dir / "history.svg", transparent=True)
+    plt.savefig(fig_dir / "history.svgz", transparent=True)
     # plt.show()
 
 
