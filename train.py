@@ -4,7 +4,7 @@ import matplotlib.pyplot as plt
 from pathlib import Path
 import math
 import numpy as np
-from triton.profiler.viewer import width
+import os
 
 from dataset import ImgDataSet
 from palette import Palette, load_palette
@@ -15,6 +15,13 @@ def main():
     device_str = 'cuda' if torch.cuda.is_available() else 'cpu'
     device = torch.device(device_str)
     print(f"Using device {torch.cuda.get_device_name(device)}")
+
+    fig_dir = Path("./binary/figures")
+    os.makedirs(fig_dir, exist_ok=True)
+
+    checkpoint_dir = Path("./binary/checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
 
     full_dataset = ImgDataSet(Path('./binary/dataset.h5'), key="128x128")
 
@@ -29,26 +36,31 @@ def main():
     teacher = lpips.LPIPS(net='vgg', pretrained=True).to(device)
     teacher.eval()
 
-    optimizer = torch.optim.Adam(sc_filter.parameters(), lr=5e-4)
+    optimizer = torch.optim.AdamW(sc_filter.parameters(), lr=1e-3, fused=True)
 
     train_loader = torch.utils.data.DataLoader(train_ds,
-                                               batch_size=8,
+                                               batch_size=32,
                                                shuffle=True,
-                                               # pin_memory=True,
-                                               # pin_memory_device=device_str,
+                                               pin_memory=True,
+                                               # num_workers=1,
+                                               # persistent_workers=True,
+                                               # prefetch_factor=2,
                                                )
     validation_loader = torch.utils.data.DataLoader(validate_ds,
-                                                    batch_size=8,
+                                                    batch_size=48,
                                                     shuffle=False,
+                                                    pin_memory=True,
+                                                    # num_workers=1,
+                                                    # persistent_workers=True,
+                                                    # prefetch_factor=2,
                                                     )
     train_history: list[float] = []
     validate_history: list[float] = [math.nan]
 
-    N_epochs = 1
+    N_epochs = 8
     for epoch in range(N_epochs):
-        train_loss_sum = 0.
-        train_samples_count = 0
-        tau = 1.5
+        tau = 1.5 * math.pow(0.5, epoch) + 1e-4
+        print(f"tau = {tau}")
         sc_filter.train()
         for batch_idx, src_img in enumerate(train_loader):
             src_img = src_img.to(device)
@@ -57,18 +69,15 @@ def main():
             converted_img = convert_dict["converted_image"]
             loss = torch.mean(teacher(src_img, converted_img), dim=0)
 
-            train_loss_sum += loss.item() * src_img.size(0)
-            train_samples_count += src_img.size(0)
-            train_history.append(loss.item())
+            # if batch_idx % 10 == 0:
+            train_history.append(float(loss.item()))
 
-            loss.backward()
             if batch_idx % 100 == 0:
                 print(f"Epoch {epoch}, batch [{batch_idx}/{len(train_loader)}]: {loss.item()}")
+
+            loss.backward()
             optimizer.step()
             optimizer.zero_grad()
-
-        trains_loss = train_loss_sum / train_samples_count
-        print(f"Epoch {epoch}, Train loss: {trains_loss}")
 
         sc_filter.eval()
         val_loss_sum = 0.
@@ -81,19 +90,28 @@ def main():
             converted_img = convert_dict["converted_image"]
             loss = torch.mean(teacher(src_img, converted_img), dim=0)
 
-            val_loss_sum += loss.item() * src_img.size(0)
+            val_loss_sum += float(loss.item()) * src_img.size(0)
             val_samples_count += src_img.size(0)
         validate_loss = val_loss_sum / val_samples_count
         print(f"Epoch {epoch}, Validation loss: {validate_loss}")
         validate_history.append(validate_loss)
 
+        torch.save({
+            'scFilter': sc_filter,
+            # 'teacher': teacher,
+            'optimizer': optimizer,
+            'palette': palette,
+        }, checkpoint_dir / f"epoch{epoch}.pth")
+
+    plt.figure("history")
     plt.plot(np.linspace(0., float(N_epochs), len(train_history)), np.array(train_history), linewidth=1, label="Train")
     plt.plot(np.arange(len(validate_history)), validate_history, 'o', label="Validate")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
     plt.legend()
 
-    plt.show()
+    plt.savefig(fig_dir / "history.svg", transparent=True)
+    # plt.show()
 
 
 main()
