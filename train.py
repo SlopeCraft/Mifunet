@@ -58,20 +58,29 @@ def main():
     train_history: list[float] = []
     validate_history: list[float] = [math.nan]
 
+    def calc_loss(src_img_on_cpu: torch.Tensor, tau: float, train: bool) -> torch.Tensor:
+        src_img = src_img_on_cpu.to(device)
+        img = sc_filter(src_img)
+        convert_dict = palette.forward(img, tau=tau, dtype=torch.float32 if train else torch.bfloat16)
+        converted_img = convert_dict["converted_image"]
+        similarity_loss = torch.mean(teacher(src_img, converted_img), dim=0)
+
+        overflow_loss = torch.mean(torch.nn.functional.relu(img - 1.0) ** 2 + torch.nn.functional.relu(-img) ** 2)
+
+        loss = similarity_loss + 0.1 / tau * overflow_loss
+
+        return loss
+
+
     N_epochs = 16
     for epoch in range(N_epochs):
-        tau = 1.5 * math.pow(0.5, epoch) + 1e-2
+        tau = 1.5 * math.pow(0.75, epoch) + 1e-2
         print(f"tau = {tau}")
         sc_filter.train()
         for batch_idx, src_img in enumerate(train_loader):
-            src_img = src_img.to(device)
-            img = sc_filter(src_img)
-            convert_dict = palette.forward(img, tau=tau)
-            converted_img = convert_dict["converted_image"]
-            loss = torch.mean(teacher(src_img, converted_img), dim=0)
-
-            # if batch_idx % 10 == 0:
-            train_history.append(float(loss.item()))
+            loss = calc_loss(src_img, tau, True)
+            if batch_idx % 5 == 0:
+                train_history.append(float(loss.item()))
 
             if batch_idx % 100 == 0:
                 print(f"Epoch {epoch}, batch [{batch_idx}/{len(train_loader)}]: {loss.item()}")
@@ -86,11 +95,7 @@ def main():
         # Calc loss on evaluation set
         with torch.no_grad():
             for src_img in validation_loader:
-                src_img = src_img.to(device)
-                img = sc_filter(src_img)
-                convert_dict = palette.forward(img, tau=tau, dtype=torch.bfloat16)
-                converted_img = convert_dict["converted_image"]
-                loss = torch.mean(teacher(src_img, converted_img), dim=0)
+                loss = calc_loss(src_img, tau, False)
 
                 val_loss_sum += float(loss.item()) * src_img.size(0)
                 val_samples_count += src_img.size(0)
@@ -103,13 +108,14 @@ def main():
             # 'teacher': teacher,
             'optimizer': optimizer,
             'palette': palette,
-        }, checkpoint_dir / f"epoch{epoch}.pth")
+        }, checkpoint_dir / f"epoch{epoch + 1}.pth")
 
     plt.figure("history")
     plt.plot(np.linspace(0., float(N_epochs), len(train_history)), np.array(train_history), linewidth=1, label="Train")
     plt.plot(np.arange(len(validate_history)), validate_history, 'o', label="Validate")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
+    plt.yscale("log")
     plt.legend()
 
     plt.savefig(fig_dir / "history.svgz", transparent=True)
