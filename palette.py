@@ -68,8 +68,11 @@ class Palette:
             'y_hard': y_hard,
             'y_soft': y_soft,
             'hard_index': hard_idx,
-            'result_image': out_img,
+            'converted_image': out_img,
         }
+
+    def to_(self, device: torch.device):
+        self.palette = self.palette.to(device)
 
 
 def test():
