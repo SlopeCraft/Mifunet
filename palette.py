@@ -49,30 +49,46 @@ def color_diff_RGB(palette: torch.Tensor, images: torch.Tensor) -> torch.Tensor:
 class Palette:
     def __init__(self, palette: np.ndarray):
         self.palette = torch.tensor(palette, dtype=torch.float32) / 255.
+        self.palette.requires_grad_(False)
 
-    def forward(self, images: torch.Tensor, tau: float) -> dict[str, torch.Tensor]:
+    def forward(self, images: torch.Tensor, tau: float,
+                details: bool = False, dtype: torch.dtype = torch.float32) -> dict[str, torch.Tensor]:
+        """images: [B,3,H,W]。dtype=torch.bfloat16 时整段计算减半内存，输出统一回 fp32。
+
+        forward 只依赖 color_diff 的接口，不依赖具体公式：
+          - STE 放在 [B,3,H,W] 分辨率做，不再有 y/y_hard/temp 这些 [B,N,H,W] 副本
+        """
         assert tau > 0
-        # [B,N,H,W]
-        weight = -color_diff_RGB(self.palette, images)
+        images = images.to(dtype)
+        pal = self.palette.to(dtype)          # [N,3]
+        N = pal.shape[0]
 
-        hard_idx = weight.argmax(dim=1)  # Should be [B,H,W]
-        y_hard = torch.nn.functional.one_hot(hard_idx, num_classes=self.palette.shape[0]).permute(0, 3, 1,
-                                                                                                  2)  # Should be [B,N,H,W]
-        y_soft = torch.nn.functional.softmax(weight / tau, dim=1)
-        # Forward: argmax; backward: softmax
-        y = y_hard + (y_soft - y_soft.detach())
+        weight = -color_diff_RGB(pal, images)  # [B,N,H,W]
 
-        out_img = torch.einsum("bnhw,nc->bchw", y, self.palette)
-        return {
-            'color_diff': -weight,
-            'y_hard': y_hard,
+        hard_idx = weight.argmax(dim=1)       # [B,H,W]
+        y_soft = torch.softmax(weight / tau, dim=1)  # [B,N,H,W]
+
+        # STE 在 [B,3,H,W] 上做（与色差函数无关）：
+        # einsum(y_hard + (y_soft - y_soft.detach()), pal)
+        #   == pal[hard_idx] + (einsum(y_soft,pal) - einsum(y_soft,pal).detach())
+        out_hard = pal[hard_idx].permute(0, 3, 1, 2)          # [B,3,H,W]
+        out_soft = torch.einsum('bnhw,nc->bchw', y_soft, pal) # [B,3,H,W]
+        converted = out_hard + (out_soft - out_soft.detach())
+        converted = converted.to(torch.float32)
+
+        result = {
+            'converted_image': converted,
             'y_soft': y_soft,
             'hard_index': hard_idx,
-            'converted_image': out_img,
         }
+        if details:  # 调试/可视化才生成大张量
+            result['color_diff'] = (-weight).to(torch.float32)  # 正距离（调试用）
+            result['y_hard'] = torch.nn.functional.one_hot(hard_idx, N).permute(0, 3, 1, 2).to(torch.float32)
+        return result
 
     def to_(self, device: torch.device):
         self.palette = self.palette.to(device)
+        self.palette.requires_grad_(False)
 
 
 def test():

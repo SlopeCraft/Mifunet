@@ -35,6 +35,7 @@ def main():
 
     teacher = lpips.LPIPS(net='vgg', pretrained=True).to(device)
     teacher.eval()
+    teacher.requires_grad_(False)
 
     optimizer = torch.optim.AdamW(sc_filter.parameters(), lr=1e-3, fused=True)
 
@@ -47,7 +48,7 @@ def main():
                                                # prefetch_factor=2,
                                                )
     validation_loader = torch.utils.data.DataLoader(validate_ds,
-                                                    batch_size=48,
+                                                    batch_size=128,
                                                     shuffle=False,
                                                     pin_memory=True,
                                                     # num_workers=1,
@@ -59,7 +60,7 @@ def main():
 
     N_epochs = 8
     for epoch in range(N_epochs):
-        tau = 1.5 * math.pow(0.5, epoch) + 1e-4
+        tau = 1.5 * math.pow(0.7, epoch) + 1e-2
         print(f"tau = {tau}")
         sc_filter.train()
         for batch_idx, src_img in enumerate(train_loader):
@@ -83,15 +84,16 @@ def main():
         val_loss_sum = 0.
         val_samples_count = 0
         # Calc loss on evaluation set
-        for src_img in validation_loader:
-            src_img = src_img.to(device)
-            img = sc_filter(src_img)
-            convert_dict = palette.forward(img, tau=tau)
-            converted_img = convert_dict["converted_image"]
-            loss = torch.mean(teacher(src_img, converted_img), dim=0)
+        with torch.no_grad():
+            for src_img in validation_loader:
+                src_img = src_img.to(device)
+                img = sc_filter(src_img)
+                convert_dict = palette.forward(img, tau=tau, dtype=torch.bfloat16)
+                converted_img = convert_dict["converted_image"]
+                loss = torch.mean(teacher(src_img, converted_img), dim=0)
 
-            val_loss_sum += float(loss.item()) * src_img.size(0)
-            val_samples_count += src_img.size(0)
+                val_loss_sum += float(loss.item()) * src_img.size(0)
+                val_samples_count += src_img.size(0)
         validate_loss = val_loss_sum / val_samples_count
         print(f"Epoch {epoch}, Validation loss: {validate_loss}")
         validate_history.append(validate_loss)
