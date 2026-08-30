@@ -6,6 +6,8 @@ import math
 import numpy as np
 import os
 
+from pytorch_msssim import ssim
+
 from dataset import ImgDataSet
 from palette import Palette, load_palette
 from sc_filter import SCFilter
@@ -70,10 +72,14 @@ def main():
         convert_dict = palette.forward(img, tau=tau, dtype=torch.float32 if train else torch.bfloat16)
         converted_img = convert_dict["converted_image"]
         similarity_loss = torch.mean(teacher(src_img, converted_img), dim=0)
+        # Force UNet output to approach converted
+        # color_diff_loss = torch.mean(convert_dict["color_diff_selected"])
 
         overflow_loss = torch.mean(torch.nn.functional.relu(img - 1.0) ** 2 + torch.nn.functional.relu(-img) ** 2)
 
-        loss = similarity_loss + 0.033 / tau * overflow_loss
+        ssim_loss = torch.mean(1.0 - ssim(src_img, converted_img, data_range=1.0))
+
+        loss = similarity_loss + 0.4 * ssim_loss + 0.3 / tau * overflow_loss  # + 1e-2 * color_diff_loss
 
         return loss
 

@@ -95,10 +95,10 @@ class Palette:
         pal = self.palette.to(dtype)          # [N,3]
         N = pal.shape[0]
 
-        weight = -color_diff_OKLAB(pal, images)  # [B,N,H,W]
+        diff = color_diff_OKLAB(pal, images)  # [B,N,H,W]
 
-        hard_idx = weight.argmax(dim=1)       # [B,H,W]
-        y_soft = torch.softmax(weight / tau, dim=1)  # [B,N,H,W]
+        color_diff_selected, hard_idx = torch.min(diff, dim=1, keepdim=False)  # [B,H,W]
+        y_soft = torch.softmax(-diff / tau, dim=1)  # [B,N,H,W]
 
         # STE 在 [B,3,H,W] 上做（与色差函数无关）：
         # einsum(y_hard + (y_soft - y_soft.detach()), pal)
@@ -108,13 +108,15 @@ class Palette:
         converted = out_hard + (out_soft - out_soft.detach())
         converted = converted.to(torch.float32)
 
+
         result = {
             'converted_image': converted,
             'y_soft': y_soft,
             'hard_index': hard_idx,
+            'color_diff_selected': color_diff_selected.to(torch.float32)
         }
         if details:  # 调试/可视化才生成大张量
-            result['color_diff'] = (-weight).to(torch.float32)  # 正距离（调试用）
+            result['color_diff'] = diff.to(torch.float32)  # 正距离（调试用）
             result['y_hard'] = torch.nn.functional.one_hot(hard_idx, N).permute(0, 3, 1, 2).to(torch.float32)
         return result
 
