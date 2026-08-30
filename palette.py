@@ -34,13 +34,45 @@ def load_palette(filename: str) -> np.ndarray:
     return colors
 
 
-# palette: [N,3]. images: [B,3,H,W]. Returns: [B,N,H,W]
+# palette: [N,3]. images: [B,3,H,W]. Returns: [B,N,H,W].
+# Should always use RGB as input
 def color_diff_RGB(palette: torch.Tensor, images: torch.Tensor) -> torch.Tensor:
     assert palette.shape[1] == 3
     assert images.shape[1] == 3
     # palette=
     # channel diff: [B,N,3,H,W]
     channel_diff = palette.view(1, -1, 3, 1, 1) - images.view(-1, 1, 3, images.shape[2], images.shape[3])
+
+    color_diff = torch.sum(torch.square(channel_diff), dim=2, keepdim=False)
+    return color_diff
+
+
+# palette: [N,3]. images: [B,3,H,W]. Returns: [B,N,H,W].
+# Should always use RGB as input
+def color_diff_OKLAB(palette_RGB: torch.Tensor, images_RGB: torch.Tensor) -> torch.Tensor:
+    M1 = torch.tensor(
+        [[0.4122214708, 0.5363325363, 0.0514459929],
+         [0.2119034982, 0.6806995451, 0.1073969566],
+         [0.0883024619, 0.2817188376, 0.6299787005]],
+        dtype=images_RGB.dtype, device=images_RGB.device)
+    M2 = torch.tensor([[0.2104542553, 0.7936177850, -0.0040720468],
+                       [1.9779984951, -2.4285922050, 0.4505937099],
+                       [0.0259040371, 0.7827717662, -0.8086757660]],
+                      dtype=images_RGB.dtype, device=images_RGB.device)
+    # Here, c refers rgb channel; m refers LMS; a refers OKLAB. b: batch, h: height, w: width, n: palette size
+    pal_LMS = torch.einsum("mc,nc->nm", M1, palette_RGB)
+    # assert torch.all(pal_LMS >= 0)
+    pal_LMS = torch.nn.functional.relu(pal_LMS - 1e-6) + 1e-6
+    pal_LMS = torch.pow(pal_LMS, 1. / 3.)
+    pal_Lab = torch.einsum("am,nm->na", M2, pal_LMS)
+
+    img_LMS = torch.einsum("mc,bchw->bmhw", M1, images_RGB)
+    img_LMS = torch.nn.functional.relu(img_LMS - 1e-6) + 1e-6
+    # assert torch.all(img_LMS >= 1e-6)
+    img_LMS = torch.pow(img_LMS, 1. / 3.)
+    img_Lab = torch.einsum("am,bmhw->bahw", M2, img_LMS)
+
+    channel_diff = pal_Lab.view(1, -1, 3, 1, 1) - img_Lab.view(-1, 1, 3, img_Lab.shape[2], img_Lab.shape[3])
 
     color_diff = torch.sum(torch.square(channel_diff), dim=2, keepdim=False)
     return color_diff
@@ -63,7 +95,7 @@ class Palette:
         pal = self.palette.to(dtype)          # [N,3]
         N = pal.shape[0]
 
-        weight = -color_diff_RGB(pal, images)  # [B,N,H,W]
+        weight = -color_diff_OKLAB(pal, images)  # [B,N,H,W]
 
         hard_idx = weight.argmax(dim=1)       # [B,H,W]
         y_soft = torch.softmax(weight / tau, dim=1)  # [B,N,H,W]
