@@ -24,9 +24,15 @@ def main():
 
 
     full_dataset = ImgDataSet(Path('./binary/dataset.h5'), key="128x128")
+    N_test = int(len(full_dataset) * 0.2)
+    N_validate = int(len(full_dataset) * 0.2)
+    # N_train = len(full_dataset) - N_test - N_validate
 
-    train_ds, validate_ds, test_ds = torch.utils.data.random_split(full_dataset, [0.6, 0.2, 0.2],
-                                                                   torch.Generator().manual_seed(42))
+    test_ds = torch.utils.data.Subset(full_dataset, range(0, N_test))
+    validate_ds = torch.utils.data.Subset(full_dataset, range(N_test, N_test + N_validate))
+    train_ds = torch.utils.data.Subset(full_dataset, range(N_test + N_validate, len(full_dataset)))
+
+    # train_ds, validate_ds, test_ds = torch.utils.data.random_split(full_da/enerator().manual_seed(42))
     # Student model
     sc_filter = SCFilter().to(device)
 
@@ -37,7 +43,7 @@ def main():
     teacher.eval()
     teacher.requires_grad_(False)
 
-    optimizer = torch.optim.AdamW(sc_filter.parameters(), lr=1e-3, fused=True)
+    optimizer = torch.optim.AdamW(sc_filter.parameters(), lr=5e-4, fused=True)
 
     train_loader = torch.utils.data.DataLoader(train_ds,
                                                batch_size=16,
@@ -67,14 +73,14 @@ def main():
 
         overflow_loss = torch.mean(torch.nn.functional.relu(img - 1.0) ** 2 + torch.nn.functional.relu(-img) ** 2)
 
-        loss = similarity_loss + 0.1 / tau * overflow_loss
+        loss = similarity_loss + 0.033 / tau * overflow_loss
 
         return loss
 
 
     N_epochs = 16
     for epoch in range(N_epochs):
-        tau = 1.5 * math.pow(0.75, epoch) + 1e-2
+        tau = 0.5 * math.pow(0.75, epoch) + 1e-2
         print(f"tau = {tau}")
         sc_filter.train()
         for batch_idx, src_img in enumerate(train_loader):
@@ -115,7 +121,7 @@ def main():
     plt.plot(np.arange(len(validate_history)), validate_history, 'o', label="Validate")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
-    plt.yscale("log")
+    # plt.yscale("log")
     plt.legend()
 
     plt.savefig(fig_dir / "history.svgz", transparent=True)
