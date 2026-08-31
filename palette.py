@@ -47,18 +47,19 @@ def color_diff_RGB(palette: torch.Tensor, images: torch.Tensor) -> torch.Tensor:
     return color_diff
 
 
-# palette: [N,3]. images: [B,3,H,W]. Returns: [B,N,H,W].
-# Should always use RGB as input
-def color_diff_OKLAB(palette_RGB: torch.Tensor, images_RGB: torch.Tensor) -> torch.Tensor:
-    M1 = torch.tensor(
-        [[0.4122214708, 0.5363325363, 0.0514459929],
-         [0.2119034982, 0.6806995451, 0.1073969566],
-         [0.0883024619, 0.2817188376, 0.6299787005]],
-        dtype=images_RGB.dtype, device=images_RGB.device)
-    M2 = torch.tensor([[0.2104542553, 0.7936177850, -0.0040720468],
-                       [1.9779984951, -2.4285922050, 0.4505937099],
-                       [0.0259040371, 0.7827717662, -0.8086757660]],
-                      dtype=images_RGB.dtype, device=images_RGB.device)
+RGB_to_LMS = torch.tensor(
+    [[0.4122214708, 0.5363325363, 0.0514459929],
+     [0.2119034982, 0.6806995451, 0.1073969566],
+     [0.0883024619, 0.2817188376, 0.6299787005]])
+
+cbrt_LMS_to_OKLab = torch.tensor([[0.2104542553, 0.7936177850, -0.0040720468],
+                                  [1.9779984951, -2.4285922050, 0.4505937099],
+                                  [0.0259040371, 0.7827717662, -0.8086757660]])
+
+
+def rgb_to_OKLab_palette(palette_RGB: torch.Tensor) -> torch.Tensor:
+    M1 = RGB_to_LMS.detach().clone().to(dtype=palette_RGB.dtype, device=palette_RGB.device)
+    M2 = cbrt_LMS_to_OKLab.detach().clone().to(dtype=palette_RGB.dtype, device=palette_RGB.device)
     # Here, c refers rgb channel; m refers LMS; a refers OKLAB. b: batch, h: height, w: width, n: palette size
     pal_LMS = torch.einsum("mc,nc->nm", M1, palette_RGB)
     # assert torch.all(pal_LMS >= 0)
@@ -66,11 +67,27 @@ def color_diff_OKLAB(palette_RGB: torch.Tensor, images_RGB: torch.Tensor) -> tor
     pal_LMS = torch.pow(pal_LMS, 1. / 3.)
     pal_Lab = torch.einsum("am,nm->na", M2, pal_LMS)
 
+    return pal_Lab
+
+
+def rgb_to_OKLab_image(images_RGB: torch.Tensor) -> torch.Tensor:
+    M1 = RGB_to_LMS.detach().clone().to(dtype=images_RGB.dtype, device=images_RGB.device)
+    M2 = cbrt_LMS_to_OKLab.detach().clone().to(dtype=images_RGB.dtype, device=images_RGB.device)
+
     img_LMS = torch.einsum("mc,bchw->bmhw", M1, images_RGB)
     img_LMS = torch.nn.functional.relu(img_LMS - 1e-6) + 1e-6
     # assert torch.all(img_LMS >= 1e-6)
     img_LMS = torch.pow(img_LMS, 1. / 3.)
     img_Lab = torch.einsum("am,bmhw->bahw", M2, img_LMS)
+
+    return img_Lab
+
+
+# palette: [N,3]. images: [B,3,H,W]. Returns: [B,N,H,W].
+# Should always use RGB as input
+def color_diff_OKLAB(palette_RGB: torch.Tensor, images_RGB: torch.Tensor) -> torch.Tensor:
+    pal_Lab = rgb_to_OKLab_palette(palette_RGB)
+    img_Lab = rgb_to_OKLab_image(images_RGB)
 
     channel_diff = pal_Lab.view(1, -1, 3, 1, 1) - img_Lab.view(-1, 1, 3, img_Lab.shape[2], img_Lab.shape[3])
 
@@ -92,7 +109,7 @@ class Palette:
         """
         assert tau > 0
         images = images.to(dtype)
-        pal = self.palette.to(dtype)          # [N,3]
+        pal = self.palette.to(dtype)  # [N,3]
         N = pal.shape[0]
 
         diff = color_diff_OKLAB(pal, images)  # [B,N,H,W]
@@ -103,11 +120,10 @@ class Palette:
         # STE 在 [B,3,H,W] 上做（与色差函数无关）：
         # einsum(y_hard + (y_soft - y_soft.detach()), pal)
         #   == pal[hard_idx] + (einsum(y_soft,pal) - einsum(y_soft,pal).detach())
-        out_hard = pal[hard_idx].permute(0, 3, 1, 2)          # [B,3,H,W]
-        out_soft = torch.einsum('bnhw,nc->bchw', y_soft, pal) # [B,3,H,W]
+        out_hard = pal[hard_idx].permute(0, 3, 1, 2)  # [B,3,H,W]
+        out_soft = torch.einsum('bnhw,nc->bchw', y_soft, pal)  # [B,3,H,W]
         converted = out_hard + (out_soft - out_soft.detach())
         converted = converted.to(torch.float32)
-
 
         result = {
             'converted_image': converted,
