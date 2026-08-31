@@ -77,9 +77,13 @@ def main():
 
         overflow_loss = torch.mean(torch.nn.functional.relu(img - 1.0) ** 2 + torch.nn.functional.relu(-img) ** 2)
 
-        ssim_loss = torch.mean(1.0 - ssim(src_img, converted_img, data_range=1.0))
+        ssim_loss = (1 - ssim(src_img, converted_img, data_range=1.0, size_average=True)) / 2
 
-        loss = similarity_loss + 0.4 * ssim_loss + 0.3 / tau * overflow_loss  # + 1e-2 * color_diff_loss
+        loss = (similarity_loss
+                + 0.4 * ssim_loss
+                + 0.1 / tau * overflow_loss
+                # + 1e-2 * color_diff_loss
+                )
 
         return loss
 
@@ -127,6 +131,7 @@ def main():
     plt.plot(np.arange(len(validate_history)), validate_history, 'o', label="Validate")
     plt.xlabel("Epoch")
     plt.ylabel("Loss")
+    plt.ylim(0, 1)
     # plt.yscale("log")
     plt.legend()
 
