@@ -3,9 +3,15 @@ import torchinfo
 
 
 class SCFilter(torch.nn.Module):
-    def __init__(self):
+    def __init__(self, palette_embedding_size: int = 64):
         super(SCFilter, self).__init__()
-
+        # Palette encoder
+        self.palette_encoder = torch.nn.Sequential(
+            torch.nn.Linear(in_features=3, out_features=palette_embedding_size),
+            torch.nn.ReLU(),
+            torch.nn.Linear(in_features=palette_embedding_size, out_features=palette_embedding_size),
+        )
+        # UNet
         self.encoder = torch.nn.ModuleList([
             torch.nn.Sequential(  # 3->64 channels
                 torch.nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, padding=1),
@@ -35,6 +41,14 @@ class SCFilter(torch.nn.Module):
                 torch.nn.ReLU(),
             )
         ])
+        # Encoder FiLM
+        self.encoder_FiLMs = torch.nn.ModuleList([
+            torch.nn.Linear(in_features=palette_embedding_size * 2, out_features=64 * 2),
+            torch.nn.Linear(in_features=palette_embedding_size * 2, out_features=128 * 2),
+            torch.nn.Linear(in_features=palette_embedding_size * 2, out_features=256 * 2),
+            torch.nn.Linear(in_features=palette_embedding_size * 2, out_features=512 * 2),
+        ])
+        assert len(self.encoder) == len(self.encoder_FiLMs)
 
         self.middle = torch.nn.Sequential(  # 512->512->512
             torch.nn.MaxPool2d(kernel_size=2, stride=2),
@@ -44,6 +58,7 @@ class SCFilter(torch.nn.Module):
             torch.nn.ReLU(),
             torch.nn.Upsample(scale_factor=2, mode='bilinear', align_corners=False),
         )
+        self.middle_FiLMs = torch.nn.Linear(in_features=palette_embedding_size * 2, out_features=512 * 2)
 
         self.decoder = torch.nn.ModuleList([
             torch.nn.Sequential(  # [512+512] -> 512
@@ -72,37 +87,78 @@ class SCFilter(torch.nn.Module):
                 torch.nn.ReLU(),
                 torch.nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, padding=1),
                 torch.nn.ReLU(),
-                torch.nn.Conv2d(in_channels=64, out_channels=3, kernel_size=1, padding=0),
             )
         ])
-
+        self.to_RGB = torch.nn.Conv2d(in_channels=64, out_channels=3, kernel_size=1, padding=0)
+        self.decoder_FiLMs = torch.nn.ModuleList([
+            torch.nn.Linear(in_features=palette_embedding_size * 2, out_features=512 * 2),
+            torch.nn.Linear(in_features=palette_embedding_size * 2, out_features=256 * 2),
+            torch.nn.Linear(in_features=palette_embedding_size * 2, out_features=128 * 2),
+            torch.nn.Linear(in_features=palette_embedding_size * 2, out_features=64 * 2),
+        ])
+        assert len(self.decoder) == len(self.encoder_FiLMs)
         assert len(self.encoder) == len(self.decoder)
 
-    def forward(self, images: torch.Tensor) -> torch.Tensor:
+    def forward(self, images: torch.Tensor, palettes: torch.Tensor, palette_lens: torch.Tensor) -> torch.Tensor:
         # images: [B,C,H,W]
+        # palettes: [B,N,3]
+        # palette lens: [B]
         assert images.ndim == 4
         assert images.size(1) == 3
 
+        batch_size = images.size(0)
+        assert palettes.ndim == 3
+        assert palette_lens.ndim == 1
+        assert palettes.size(0) == batch_size
+        assert palettes.size(2) == 3
+        assert palette_lens.size(0) == batch_size
+
+        palette_embedding = self.palette_encoder(palettes)  # Should be : [B,N,64]
+        palette_len_max = palettes.size(1)
+        mask = torch.arange(palette_len_max,
+                            device=palette_lens.device,
+                            dtype=palette_lens.dtype).reshape(1, -1) < palette_lens.view(-1, 1)
+        # [B,64*2]
+        palette_embedding = torch.cat([torch.masked.mean(palette_embedding, dim=1,
+                                                         mask=mask.view(batch_size, palette_len_max, 1)),
+                                       torch.masked.amax(palette_embedding, dim=1,
+                                                         mask=mask.view(batch_size, palette_len_max, 1)),
+                                       ], dim=1)
+
         stack = []
         x = images
-        for layer in self.encoder:
+        for layer, film in zip(self.encoder, self.encoder_FiLMs):
             x = layer(x)
+            gamma, beta = film(palette_embedding).chunk(2, dim=-1)
+            x = x * gamma.view(batch_size, -1, 1, 1) + beta.view(batch_size, -1, 1, 1)
             stack.append(x)
 
         x = self.middle(x)
-        for layer in self.decoder:
+        gamma, beta = self.middle_FiLMs(palette_embedding).chunk(2, dim=-1)
+        x = x * gamma.view(batch_size, -1, 1, 1) + beta.view(batch_size, -1, 1, 1)
+        del gamma, beta
+
+        for layer, film in zip(self.decoder, self.decoder_FiLMs):
             previous_x = stack[-1]
             stack.pop()
             x = torch.cat([x, previous_x], dim=1)
             x = layer(x)
+            gamma, beta = film(palette_embedding).chunk(2, dim=-1)
+            x = x * gamma.view(batch_size, -1, 1, 1) + beta.view(batch_size, -1, 1, 1)
+            pass
         assert len(stack) == 0
+        x = self.to_RGB(x)
         assert x.shape == images.shape
         return x
 
 
 def test():
     model = SCFilter()
-    torchinfo.summary(model, input_size=(1, 3, 128, 128))
+    torchinfo.summary(model,
+                      input_data=[torch.rand((2, 3, 128, 128), dtype=torch.float32),
+                                  torch.rand((2, 183, 3), dtype=torch.float32),
+                                  torch.randint(0, 182, size=(2,), dtype=torch.int32)]
+                      )
     pass
 
 
