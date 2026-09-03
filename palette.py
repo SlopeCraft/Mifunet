@@ -53,6 +53,14 @@ class PaletteDataSet(torch.utils.data.Dataset):
         pal = load_palette(filename)
         self.add_palette_numpy(pal, data_range=255.)
 
+    @staticmethod
+    def from_files(filenames: list[str]) -> PaletteDataSet:
+        ret = PaletteDataSet()
+        for filename in filenames:
+            ret.add_palette_from_file(filename)
+
+        return ret
+
     def __len__(self) -> int:
         return len(self.palette_arrays)
 
@@ -174,9 +182,11 @@ def convert_images(palettes_RGB: torch.Tensor, palette_mask: torch.Tensor, image
 
     diff = color_diff_OKLAB(pal, images)  # [B,N,H,W]
 
-    hard_idx = torch.masked.argmin(diff, dim=1, keepdim=False, mask=palette_mask, dtype=torch.int32)  # [B,H,W]
-    color_diff_selected = torch.masked.amin(diff, dim=1, keepdim=False, mask=palette_mask)  # [B,H,W]
-    y_soft = torch.masked.softmax(-diff / tau, dim=1, mask=palette_mask)  # [B,N,H,W]
+    hard_idx = torch.masked.argmin(diff, dim=1, keepdim=False, mask=palette_mask.view(batch_size, -1, 1, 1),
+                                   dtype=torch.int32)  # [B,H,W]
+    color_diff_selected = torch.masked.amin(diff, dim=1, keepdim=False,
+                                            mask=palette_mask.view(batch_size, -1, 1, 1))  # [B,H,W]
+    y_soft = torch.masked.softmax(-diff / tau, dim=1, mask=palette_mask.view(batch_size, -1, 1, 1))  # [B,N,H,W]
 
     # STE 在 [B,3,H,W] 上做（与色差函数无关）：
     out_hard = pal[b_idx, hard_idx].permute(0, 3, 1, 2)  # [B, H, W, 3]
@@ -198,17 +208,16 @@ def convert_images(palettes_RGB: torch.Tensor, palette_mask: torch.Tensor, image
 
 
 def test():
-    pal = PaletteDataSet()
-    pal.add_palette_from_file("./binary/colorset-Slope.png")
-    pal.add_palette_from_file("./binary/colorset-Slope-old.png")
-    pal.add_palette_from_file("./binary/colorset-Flat.png")
-    pal.add_palette_from_file("./binary/colorset-Flat-old.png")
-    pal.add_palette_from_file("./binary/colorset-FileOnly.png")
-    pal.add_palette_from_file("./binary/colorset-FileOnly-old.png")
-
-    # full = pal.merged_full_palette()
-    # pass
-    # pal = Palette(colors)
+    pal = PaletteDataSet.from_files(
+        [
+            "./binary/colorset-Slope.png",
+            "./binary/colorset-Slope-old.png",
+            "./binary/colorset-Flat.png",
+            "./binary/colorset-Flat-old.png",
+            "./binary/colorset-FileOnly.png",
+            "./binary/colorset-FileOnly-old.png",
+        ]
+    )
 
     img = torch.randn((2, 3, 63, 129))
     pals, lens = pal[torch.tensor([0, 3])]

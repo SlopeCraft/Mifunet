@@ -1,5 +1,6 @@
 import torch
 import torchinfo
+from triton.language import dtype
 
 
 class SCFilter(torch.nn.Module):
@@ -99,30 +100,30 @@ class SCFilter(torch.nn.Module):
         assert len(self.decoder) == len(self.encoder_FiLMs)
         assert len(self.encoder) == len(self.decoder)
 
-    def forward(self, images: torch.Tensor, palettes: torch.Tensor, palette_lens: torch.Tensor) -> torch.Tensor:
-        # images: [B,C,H,W]
-        # palettes: [B,N,3]
-        # palette lens: [B]
+    # images: [B,C,H,W]
+    # palettes: [B,N,3]
+    # palette lens: [B]
+    def forward(self, images: torch.Tensor, palettes: torch.Tensor, palette_mask: torch.Tensor) -> torch.Tensor:
         assert images.ndim == 4
         assert images.size(1) == 3
 
         batch_size = images.size(0)
         assert palettes.ndim == 3
-        assert palette_lens.ndim == 1
+        # assert palette_lens.ndim == 1
         assert palettes.size(0) == batch_size
         assert palettes.size(2) == 3
-        assert palette_lens.size(0) == batch_size
+        # assert palette_lens.size(0) == batch_size
 
         palette_embedding = self.palette_encoder(palettes)  # Should be : [B,N,64]
         palette_len_max = palettes.size(1)
-        mask = torch.arange(palette_len_max,
-                            device=palette_lens.device,
-                            dtype=palette_lens.dtype).reshape(1, -1) < palette_lens.view(-1, 1)
+        # mask = torch.arange(palette_len_max,
+        #                     device=palette_lens.device,
+        #                     dtype=palette_lens.dtype).reshape(1, -1) < palette_lens.view(-1, 1)
         # [B,64*2]
         palette_embedding = torch.cat([torch.masked.mean(palette_embedding, dim=1,
-                                                         mask=mask.view(batch_size, palette_len_max, 1)),
+                                                         mask=palette_mask.view(batch_size, palette_len_max, 1)),
                                        torch.masked.amax(palette_embedding, dim=1,
-                                                         mask=mask.view(batch_size, palette_len_max, 1)),
+                                                         mask=palette_mask.view(batch_size, palette_len_max, 1)),
                                        ], dim=1)
 
         stack = []
@@ -157,7 +158,8 @@ def test():
     torchinfo.summary(model,
                       input_data=[torch.rand((2, 3, 128, 128), dtype=torch.float32),
                                   torch.rand((2, 183, 3), dtype=torch.float32),
-                                  torch.randint(0, 182, size=(2,), dtype=torch.int32)]
+                                  torch.randint(0, 1, (2, 183)).to(torch.bool)
+                                  ]
                       )
     pass
 
