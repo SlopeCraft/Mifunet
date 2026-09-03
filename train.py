@@ -133,7 +133,7 @@ def main():
         with torch.no_grad():
             begin_idx = 0
             for src_img in validation_loader:
-                idx = torch.arange(begin_idx, begin_idx + src_img.size(0), src_img.size(0), dtype=torch.int32) % len(
+                idx = torch.arange(start=begin_idx, end=begin_idx + src_img.size(0), dtype=torch.int32) % len(
                     palette_dataset)
                 begin_idx += src_img.size(0)
                 pals, pal_lens = palette_dataset[idx]
@@ -149,7 +149,7 @@ def main():
             'scFilter': sc_filter,
             # 'teacher': teacher,
             'optimizer': optimizer,
-            'palette': palette,
+            'palette_dataset': palette_dataset,
         }, checkpoint_dir / f"epoch{epoch + 1}.pth")
 
     plt.figure("history")

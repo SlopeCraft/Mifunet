@@ -5,8 +5,8 @@ import numpy as np
 import os
 import argparse
 
+import palette
 from dataset import ImgDataSet
-from palette import Palette, load_palette
 from sc_filter import SCFilter
 
 
@@ -38,17 +38,23 @@ def run():
         args.checkpoint,
         weights_only=False)
 
-    palette: Palette = ckpt['palette']
+    palette_dataset = palette.PaletteDataSet.from_files(["./binary/colorset-Slope.png"])
+    # palette: Palette = ckpt['palette']
     sc_filter: SCFilter = ckpt['scFilter'].to(device)
     sc_filter.eval()
 
     N_imgs: int = args.num
     assert N_imgs > 0
 
+    pal, pal_len = palette_dataset[torch.zeros([N_imgs], dtype=torch.int32)]
+    pal = pal.to(device)
+    pal_len = pal_len.to(device)
+    pal_mask = palette.make_palette_mask(pal_len, pal.size(1))
+
     input_imgs = full_dataset[1:N_imgs + 1].to(device)
-    output_imgs = sc_filter(input_imgs)
-    sc_converted_imgs = palette.forward(output_imgs, tau=1e-2)['converted_image']
-    naive_converted_imgs = palette.forward(input_imgs, tau=1e-2)['converted_image']
+    output_imgs = sc_filter(input_imgs, pal, pal_mask)
+    sc_converted_imgs = palette.convert_images(pal, pal_mask, output_imgs, tau=1e-2)['converted_image']
+    naive_converted_imgs = palette.convert_images(pal, pal_mask, input_imgs, tau=1e-2)['converted_image']
 
     input_imgs = tensors2images(input_imgs)
     output_imgs = tensors2images(output_imgs)
