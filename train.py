@@ -65,7 +65,7 @@ def main():
                                                # prefetch_factor=2,
                                                )
     validation_loader = torch.utils.data.DataLoader(validate_ds,
-                                                    batch_size=128,
+                                                    batch_size=32,
                                                     shuffle=False,
                                                     pin_memory=True,
                                                     # num_workers=1,
@@ -100,7 +100,7 @@ def main():
         ssim_loss = (1 - ssim(src_img_, converted_img, data_range=1.0, size_average=True)) / 2
 
         loss_ = (similarity_loss
-                 + 0.4 * ssim_loss
+                 # + 0.2 * ssim_loss
                  + 0.1 / tau * overflow_loss
                  # + 1e-2 * color_diff_loss
                  )
@@ -109,7 +109,7 @@ def main():
 
     N_epochs = 16
     for epoch in range(N_epochs):
-        tau = 0.5 * math.pow(0.75, epoch) + 1e-2
+        tau = max(1 - 0.1 * epoch, 1e-2)
         print(f"tau = {tau}")
         sc_filter.train()
         for batch_idx, src_img in enumerate(train_loader):
@@ -144,6 +144,8 @@ def main():
         validate_loss = val_loss_sum / val_samples_count
         print(f"Epoch {epoch}, Validation loss: {validate_loss}")
         validate_history.append(validate_loss)
+
+        torch.cuda.empty_cache()
 
         torch.save({
             'scFilter': sc_filter,
