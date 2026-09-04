@@ -23,6 +23,7 @@ def run():
     parser.add_argument("--dataset", type=str, required=True)
     parser.add_argument("--dataset-key", type=str, required=True)
     parser.add_argument("--num", type=int, default=4)
+    parser.add_argument("--export-onnx", action='store_true')
     args = parser.parse_args()
 
     device_str = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -51,10 +52,31 @@ def run():
     pal_len = pal_len.to(device)
     pal_mask = palette.make_palette_mask(pal_len, pal.size(1))
 
+
     input_imgs = full_dataset[1:N_imgs + 1].to(device)
     output_imgs = sc_filter(input_imgs, pal, pal_mask)
     sc_converted_imgs = palette.convert_images(pal, pal_mask, output_imgs, tau=1e-2)['converted_image']
     naive_converted_imgs = palette.convert_images(pal, pal_mask, input_imgs, tau=1e-2)['converted_image']
+
+    if args.export_onnx:
+        from torch.export import Dim
+        dim_batch_size = Dim("batch_size")
+        dim_rows = Dim("image_rows")
+        dim_cols = Dim("image_cols")
+        dim_palette_length = Dim("palette_length")
+        torch.onnx.export(
+            sc_filter,
+            (input_imgs, pal, pal_mask),
+            fig_dir / f"{Path(args.checkpoint).stem}.onnx",
+            input_names=["in image", "palette", "palette mask"],
+            output_names=["out image"],
+            dynamic_shapes={
+                "images": {0: dim_batch_size, 2: dim_rows, 3: dim_cols},
+                "palettes": {0: dim_batch_size, 1: dim_palette_length},
+                "palette_mask": {0: dim_batch_size, 1: dim_palette_length},
+            },
+            dynamo=True,
+        )
 
     input_imgs = tensors2images(input_imgs)
     output_imgs = tensors2images(output_imgs)
